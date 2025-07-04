@@ -64,7 +64,7 @@ export default async function handler(req, res) {
 // --- New WebSocket-based Audio Generation Function ---
 function generateAudioWithTimestamps(text, recordId) {
   // The WebSocket URL is different from the old one
-  const socketUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${process.env.VOICE_ID}/stream-input?model_id=eleven_multilingual_v2`;
+const socketUrl = `wss://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM/stream-input?model_id=eleven_monolingual_v1`;
   
   return new Promise((resolve, reject) => {
     const elevenlabsSocket = new WebSocket(socketUrl);
