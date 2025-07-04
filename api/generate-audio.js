@@ -39,10 +39,8 @@ export default async function handler(req, res) {
     }
     console.log("Successfully fetched script from Airtable.");
     
-    // Use a Promise to handle the WebSocket asynchronous flow
     const { audioUrl, timestamps } = await generateAudioWithTimestamps(scriptText, recordId);
 
-    // Update Airtable with the final data
     await airtable.update(recordId, {
       "Audio URL": audioUrl,
       "Timestamps JSON": JSON.stringify(timestamps, null, 2),
@@ -66,41 +64,37 @@ function generateAudioWithTimestamps(text, recordId) {
   const socketUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${process.env.VOICE_ID}/stream-input?model_id=eleven_multilingual_v2&output_format=mp3_44100_128`;
   
   return new Promise((resolve, reject) => {
-    const elevenlabsSocket = new WebSocket(socketUrl);
+    // **Correction #1: API Key is now in the headers**
+    const elevenlabsSocket = new WebSocket(socketUrl, {
+      headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY }
+    });
+    
     const audioChunks = [];
     const timestamps = [];
 
-    // 1. When the connection opens, send configuration
     elevenlabsSocket.on('open', () => {
       console.log('WebSocket connection opened.');
       
-      // *** THIS IS THE CORRECTED MESSAGE STRUCTURE ***
       const bosMessage = {
         text: " ",
-        voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.75
-        },
-        generation_config: {
-          chunk_length_schedule: [120, 160, 250, 290]
-        },
-        xi_api_key: process.env.ELEVENLABS_API_KEY,
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
       };
       elevenlabsSocket.send(JSON.stringify(bosMessage));
 
-      const textMessage = { text, try_trigger_generation: true };
+      // **Correction #3: Use 'flush: true' to get audio immediately**
+      const textMessage = { text, flush: true };
       elevenlabsSocket.send(JSON.stringify(textMessage));
 
       const eosMessage = { text: "" };
       elevenlabsSocket.send(JSON.stringify(eosMessage));
     });
 
-    // 2. When a message is received, process it
     elevenlabsSocket.on('message', (message) => {
       const data = JSON.parse(message);
       
-      if (data.audio_chunk) {
-        audioChunks.push(Buffer.from(data.audio_chunk, 'base64'));
+      // **Correction #2: The audio data key is 'audio'**
+      if (data.audio) {
+        audioChunks.push(Buffer.from(data.audio, 'base64'));
       }
       
       if (data.alignment) {
@@ -108,13 +102,11 @@ function generateAudioWithTimestamps(text, recordId) {
       }
     });
 
-    // 3. Handle errors
     elevenlabsSocket.on('error', (error) => {
       console.error('WebSocket Error:', error);
       reject(error);
     });
 
-    // 4. When the connection closes, process the final audio
     elevenlabsSocket.on('close', async () => {
       console.log('WebSocket connection closed.');
       if (audioChunks.length === 0) {
