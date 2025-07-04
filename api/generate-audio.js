@@ -2,10 +2,9 @@
 
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import Airtable from "airtable";
-import fetch from "node-fetch";
+import WebSocket from "ws"; // Import the new 'ws' package
 
-// --- Initialize API Clients ---
-// These clients are configured using environment variables, which you'll set in Vercel.
+// --- Initialize API Clients (No changes here) ---
 const s3Client = new S3Client({
   region: process.env.AWS_S3_REGION,
   credentials: {
@@ -21,107 +20,35 @@ const airtable = new Airtable({ apiKey: process.env.AIRTABLE_API_KEY }).base(
 
 // --- The Main Serverless Function Handler ---
 export default async function handler(req, res) {
-  // 1. We only accept POST requests to this endpoint
   if (req.method !== "POST") {
     return res.status(405).json({ message: "Method Not Allowed. Use POST." });
   }
 
-  // 2. Get the Airtable Record ID from the request body
   const { recordId } = req.body;
   if (!recordId) {
     return res.status(400).json({ message: "Missing required field: recordId" });
   }
-
+  
   console.log(`Processing request for Airtable Record ID: ${recordId}`);
 
   try {
-    // --- Step 1: Fetch Script from Airtable ---
     const record = await airtable.find(recordId);
-    const scriptText = record.get("Script"); // Assumes your text field is named "Script"
-
+    const scriptText = record.get("Script");
     if (!scriptText) {
       throw new Error("Script field is empty or not found in Airtable record.");
     }
     console.log("Successfully fetched script from Airtable.");
-
-
-    // --- Step 2: Call ElevenLabs API for TTS with Timestamps ---
-    const elevenLabsResponse = await fetch(
-`https://api.elevenlabs.io/v1/text-to-speech/${process.env.VOICE_ID}/stream?output_format=mp3_44100_128`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "xi-api-key": process.env.ELEVENLABS_API_KEY,
-        },
-        body: JSON.stringify({
-          model_id: "eleven_multilingual_v2", // Or another model you prefer
-          text: scriptText,
-          voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.75,
-          },
-        }),
-      }
-    );
-
-    if (!elevenLabsResponse.ok) {
-        const errorBody = await elevenLabsResponse.text();
-        throw new Error(`ElevenLabs API Error: ${elevenLabsResponse.status} ${errorBody}`);
-    }
-
-    console.log("Streaming response from ElevenLabs...");
-
-    // --- Step 3: Process the Streaming Response ---
-    // The stream contains audio chunks mixed with JSON objects for timestamps.
-    // We need to separate them.
-    const audioChunks = [];
-    const timestamps = [];
     
-    // We use a special function to iterate through the stream
-    for await (const chunk of elevenLabsResponse.body) {
-      // A small try-catch block helps separate JSON from audio data
-      try {
-        const timestampData = JSON.parse(chunk.toString());
-        timestamps.push(timestampData);
-      } catch (error) {
-        // If JSON.parse fails, it's an audio chunk.
-        audioChunks.push(chunk);
-      }
-    }
-    
-    console.log("Stream processing complete. Found", timestamps.length, "timestamp objects.");
+    // Use a Promise to handle the WebSocket asynchronous flow
+    const { audioUrl, timestamps } = await generateAudioWithTimestamps(scriptText, recordId);
 
-    // Combine all audio chunks into a single buffer
-    const audioBuffer = Buffer.concat(audioChunks);
-
-
-    // --- Step 4: Upload the Audio to Amazon S3 ---
-    const fileName = `audio/${recordId}-${Date.now()}.mp3`;
-    
-    const s3Command = new PutObjectCommand({
-        Bucket: process.env.AWS_S3_BUCKET_NAME,
-        Key: fileName,
-        Body: audioBuffer,
-        ContentType: 'audio/mpeg',
-    });
-
-    await s3Client.send(s3Command);
-    console.log(`Successfully uploaded audio to S3: ${fileName}`);
-
-    // Construct the public URL for the file
-    const audioUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${fileName}`;
-
-
-    // --- Step 5: Update Airtable with Audio URL and Timestamps ---
+    // Update Airtable with the final data
     await airtable.update(recordId, {
       "Audio URL": audioUrl,
-      "Timestamps JSON": JSON.stringify(timestamps, null, 2), // Pretty-print the JSON
+      "Timestamps JSON": JSON.stringify(timestamps, null, 2),
     });
     console.log("Successfully updated Airtable record.");
-
-
-    // --- Step 6: Send Final Response ---
+    
     res.status(200).json({
       message: "Successfully generated audio and updated records.",
       audioUrl: audioUrl,
@@ -129,7 +56,92 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
-    console.error("An error occurred:", error);
+    console.error("An error occurred in the handler:", error);
     res.status(500).json({ message: "An internal error occurred.", error: error.message });
   }
+}
+
+// --- New WebSocket-based Audio Generation Function ---
+function generateAudioWithTimestamps(text, recordId) {
+  // The WebSocket URL is different from the old one
+  const socketUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${process.env.VOICE_ID}/stream-input?model_id=eleven_multilingual_v2`;
+  
+  return new Promise((resolve, reject) => {
+    const elevenlabsSocket = new WebSocket(socketUrl);
+    const audioChunks = [];
+    const timestamps = [];
+
+    // 1. When the connection opens, send configuration
+    elevenlabsSocket.on('open', () => {
+      console.log('WebSocket connection opened.');
+      // Send the "Beginning of Stream" (BOS) message with API key
+      const bosMessage = {
+        text: " ",
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+        xi_api_key: process.env.ELEVENLABS_API_KEY,
+      };
+      elevenlabsSocket.send(JSON.stringify(bosMessage));
+
+      // Send the actual text message
+      const textMessage = { text: text, try_trigger_generation: true };
+      elevenlabsSocket.send(JSON.stringify(textMessage));
+
+      // Send the "End of Stream" (EOS) message
+      const eosMessage = { text: "" };
+      elevenlabsSocket.send(JSON.stringify(eosMessage));
+    });
+
+    // 2. When a message is received, process it
+    elevenlabsSocket.on('message', (message) => {
+      const data = JSON.parse(message);
+      
+      // If the message contains an audio chunk, add it to our array
+      if (data.audio_chunk) {
+        audioChunks.push(Buffer.from(data.audio_chunk, 'base64'));
+      }
+      
+      // If the message contains timestamp data, add it to our array
+      if (data.alignment) {
+        timestamps.push(data.alignment);
+      }
+    });
+
+    // 3. Handle errors
+    elevenlabsSocket.on('error', (error) => {
+      console.error('WebSocket Error:', error);
+      reject(error);
+    });
+
+    // 4. When the connection closes, process the final audio and resolve the promise
+    elevenlabsSocket.on('close', async () => {
+      console.log('WebSocket connection closed.');
+      if (audioChunks.length === 0) {
+        return reject(new Error("No audio data received from ElevenLabs."));
+      }
+      
+      const audioBuffer = Buffer.concat(audioChunks);
+      const fileName = `audio/${recordId}-${Date.now()}.mp3`;
+
+      try {
+        // Upload to S3
+        const s3Command = new PutObjectCommand({
+            Bucket: process.env.AWS_S3_BUCKET_NAME,
+            Key: fileName,
+            Body: audioBuffer,
+            ContentType: 'audio/mpeg',
+        });
+        await s3Client.send(s3Command);
+        console.log(`Successfully uploaded audio to S3: ${fileName}`);
+        
+        const audioUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${fileName}`;
+        
+        // Resolve with the final data
+        resolve({ audioUrl, timestamps });
+
+      } catch (error) {
+        console.error("Error during S3 upload or Airtable update:", error);
+        reject(error);
+      }
+    });
+  });
 }
