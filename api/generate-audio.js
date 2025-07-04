@@ -47,7 +47,7 @@ export default async function handler(req, res) {
 
     // --- Step 2: Call ElevenLabs API for TTS with Timestamps ---
     const elevenLabsResponse = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${process.env.VOICE_ID}/stream?output_format=mp3_44100_128_timestamps`,
+`https://api.elevenlabs.io/v1/text-to-speech/${process.env.VOICE_ID}/stream?output_format=mp3_44100_128`,
       {
         method: "POST",
         headers: {
