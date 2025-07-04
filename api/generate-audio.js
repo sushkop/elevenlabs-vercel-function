@@ -72,24 +72,30 @@ function generateAudioWithTimestamps(text, recordId) {
     const timestamps = [];
 
     // 1. When the connection opens, send configuration
-    elevenlabsSocket.on('open', () => {
-      console.log('WebSocket connection opened.');
-      // Send the "Beginning of Stream" (BOS) message with API key
-      const bosMessage = {
-        text: " ",
-        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-        xi_api_key: process.env.ELEVENLABS_API_KEY,
-      };
-      elevenlabsSocket.send(JSON.stringify(bosMessage));
+   elevenlabsSocket.on('open', () => {
+  console.log('WebSocket connection opened. Waiting a moment...');
+  // Add a small delay to ensure the connection is fully ready
+  setTimeout(() => {
+    console.log('Sending data to ElevenLabs...');
+    
+    // Send the "Beginning of Stream" (BOS) message with API key
+    const bosMessage = {
+      text: " ",
+      voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+      xi_api_key: process.env.ELEVENLABS_API_KEY,
+    };
+    elevenlabsSocket.send(JSON.stringify(bosMessage));
 
-      // Send the actual text message
-      const textMessage = { text: text, try_trigger_generation: true };
-      elevenlabsSocket.send(JSON.stringify(textMessage));
+    // Send the actual text message
+    const textMessage = { text: text, try_trigger_generation: true };
+    elevenlabsSocket.send(JSON.stringify(textMessage));
 
-      // Send the "End of Stream" (EOS) message
-      const eosMessage = { text: "" };
-      elevenlabsSocket.send(JSON.stringify(eosMessage));
-    });
+    // Send the "End of Stream" (EOS) message
+    const eosMessage = { text: "" };
+    elevenlabsSocket.send(JSON.stringify(eosMessage));
+    
+  }, 100); // 100 millisecond delay
+});
 
     // 2. When a message is received, process it
     elevenlabsSocket.on('message', (message) => {
