@@ -12,6 +12,6 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.504.0",
     "airtable": "^0.12.2",
-    "node-fetch": "^3.3.2"
+"node-fetch": "^2.6.7"
   }
 }
