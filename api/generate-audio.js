@@ -2,9 +2,9 @@
 
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import Airtable from "airtable";
-import WebSocket from "ws"; // Import the new 'ws' package
+import WebSocket from "ws";
 
-// --- Initialize API Clients (No changes here) ---
+// --- Initialize API Clients ---
 const s3Client = new S3Client({
   region: process.env.AWS_S3_REGION,
   credentials: {
@@ -61,10 +61,9 @@ export default async function handler(req, res) {
   }
 }
 
-// --- New WebSocket-based Audio Generation Function ---
+// --- WebSocket-based Audio Generation Function (Corrected Version) ---
 function generateAudioWithTimestamps(text, recordId) {
-  // The WebSocket URL is different from the old one
-const socketUrl = `wss://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM/stream-input?model_id=eleven_monolingual_v1`;
+  const socketUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${process.env.VOICE_ID}/stream-input?model_id=eleven_multilingual_v2&output_format=mp3_44100_128`;
   
   return new Promise((resolve, reject) => {
     const elevenlabsSocket = new WebSocket(socketUrl);
@@ -72,41 +71,38 @@ const socketUrl = `wss://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWA
     const timestamps = [];
 
     // 1. When the connection opens, send configuration
-   elevenlabsSocket.on('open', () => {
-  console.log('WebSocket connection opened. Waiting a moment...');
-  // Add a small delay to ensure the connection is fully ready
-  setTimeout(() => {
-    console.log('Sending data to ElevenLabs...');
-    
-    // Send the "Beginning of Stream" (BOS) message with API key
-    const bosMessage = {
-      text: " ",
-      voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-      xi_api_key: process.env.ELEVENLABS_API_KEY,
-    };
-    elevenlabsSocket.send(JSON.stringify(bosMessage));
+    elevenlabsSocket.on('open', () => {
+      console.log('WebSocket connection opened.');
+      
+      // *** THIS IS THE CORRECTED MESSAGE STRUCTURE ***
+      const bosMessage = {
+        text: " ",
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.75
+        },
+        generation_config: {
+          chunk_length_schedule: [120, 160, 250, 290]
+        },
+        xi_api_key: process.env.ELEVENLABS_API_KEY,
+      };
+      elevenlabsSocket.send(JSON.stringify(bosMessage));
 
-    // Send the actual text message
-    const textMessage = { text: text, try_trigger_generation: true };
-    elevenlabsSocket.send(JSON.stringify(textMessage));
+      const textMessage = { text, try_trigger_generation: true };
+      elevenlabsSocket.send(JSON.stringify(textMessage));
 
-    // Send the "End of Stream" (EOS) message
-    const eosMessage = { text: "" };
-    elevenlabsSocket.send(JSON.stringify(eosMessage));
-    
-  }, 100); // 100 millisecond delay
-});
+      const eosMessage = { text: "" };
+      elevenlabsSocket.send(JSON.stringify(eosMessage));
+    });
 
     // 2. When a message is received, process it
     elevenlabsSocket.on('message', (message) => {
       const data = JSON.parse(message);
       
-      // If the message contains an audio chunk, add it to our array
       if (data.audio_chunk) {
         audioChunks.push(Buffer.from(data.audio_chunk, 'base64'));
       }
       
-      // If the message contains timestamp data, add it to our array
       if (data.alignment) {
         timestamps.push(data.alignment);
       }
@@ -118,7 +114,7 @@ const socketUrl = `wss://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWA
       reject(error);
     });
 
-    // 4. When the connection closes, process the final audio and resolve the promise
+    // 4. When the connection closes, process the final audio
     elevenlabsSocket.on('close', async () => {
       console.log('WebSocket connection closed.');
       if (audioChunks.length === 0) {
@@ -129,7 +125,6 @@ const socketUrl = `wss://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWA
       const fileName = `audio/${recordId}-${Date.now()}.mp3`;
 
       try {
-        // Upload to S3
         const s3Command = new PutObjectCommand({
             Bucket: process.env.AWS_S3_BUCKET_NAME,
             Key: fileName,
@@ -141,7 +136,6 @@ const socketUrl = `wss://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWA
         
         const audioUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${fileName}`;
         
-        // Resolve with the final data
         resolve({ audioUrl, timestamps });
 
       } catch (error) {
